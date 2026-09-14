@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { TimerMode, SessionConfig, SessionRecord } from '../types';
-import { SESSION_OPTIONS, COLORS, SOUNDS } from '../constants';
+import { SESSION_OPTIONS, SOUNDS } from '../constants';
 import { saveSession, isTaskNameUniqueToday } from '../services/storage';
 
 interface TimerDisplayProps {
@@ -18,6 +18,7 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
   
   const timerRef = useRef<number | null>(null);
+  const baseTitleRef = useRef(document.title);
 
   const playSound = (type: 'success' | 'fail') => {
     const audio = new Audio(SOUNDS[type]);
@@ -31,6 +32,12 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
     }
     setIsActive(false);
   }, []);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const completeSession = useCallback(() => {
     stopTimer();
@@ -84,6 +91,17 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
     };
   }, [isActive, timeLeft, completeSession]);
 
+  useEffect(() => {
+    const modeLabel = mode === 'focus' ? 'Focus' : 'Rest';
+    const trimmedTaskName = taskName.trim();
+    const taskSegment = trimmedTaskName ? ` • ${trimmedTaskName}` : '';
+    document.title = `${formatTime(timeLeft)} • ${modeLabel}${taskSegment}`;
+
+    return () => {
+      document.title = baseTitleRef.current;
+    };
+  }, [timeLeft, mode, taskName]);
+
   const handleStart = () => {
     if (mode === 'focus') {
       if (!taskName.trim()) {
@@ -116,12 +134,6 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
     setMode('focus');
     setTimeLeft(newConfig.focusTime * 60);
     setSessionStartTime(null);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const progress = 1 - (timeLeft / (mode === 'focus' ? config.focusTime * 60 : config.restTime * 60));
