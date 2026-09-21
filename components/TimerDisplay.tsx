@@ -18,20 +18,68 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
   
   const timerRef = useRef<number | null>(null);
+  const targetEndTimeRef = useRef<number | null>(null);
   const baseTitleRef = useRef(document.title);
+  const successAudioRef = useRef<HTMLAudioElement | null>(null);
+  const failAudioRef = useRef<HTMLAudioElement | null>(null);
+  const isCompletingRef = useRef(false);
 
-  const playSound = (type: 'success' | 'fail') => {
-    const audio = new Audio(SOUNDS[type]);
-    audio.play().catch(e => console.error("Audio play failed", e));
-  };
+  const getDurationSeconds = useCallback(
+    (nextMode: TimerMode = mode, nextConfig: SessionConfig = config) => (
+      nextMode === 'focus' ? nextConfig.focusTime * 60 : nextConfig.restTime * 60
+    ),
+    [config, mode],
+  );
 
-  const stopTimer = useCallback(() => {
+  const clearTimerInterval = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-    setIsActive(false);
   }, []);
+
+  const playSound = useCallback((type: 'success' | 'fail') => {
+    const audio = type === 'success' ? successAudioRef.current : failAudioRef.current;
+
+    if (!audio) {
+      const fallbackAudio = new Audio(SOUNDS[type]);
+      fallbackAudio.play().catch(e => console.error('Audio play failed', e));
+      return;
+    }
+
+    audio.pause();
+    audio.currentTime = 0;
+    audio.play().catch(e => console.error('Audio play failed', e));
+  }, []);
+
+  const unlockAudio = useCallback(async () => {
+    const warmAudio = async (audio: HTMLAudioElement | null) => {
+      if (!audio) return;
+
+      try {
+        audio.muted = true;
+        audio.currentTime = 0;
+        await audio.play();
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // Ignore warm-up failures; real playback still retries on completion.
+      } finally {
+        audio.muted = false;
+      }
+    };
+
+    await Promise.allSettled([
+      warmAudio(successAudioRef.current),
+      warmAudio(failAudioRef.current),
+    ]);
+  }, []);
+
+  const stopTimer = useCallback(() => {
+    clearTimerInterval();
+    targetEndTimeRef.current = null;
+    setIsActive(false);
+  }, [clearTimerInterval]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -39,7 +87,20 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const getRemainingSeconds = useCallback(() => {
+    if (!targetEndTimeRef.current) {
+      return timeLeft;
+    }
+
+    return Math.max(0, Math.ceil((targetEndTimeRef.current - Date.now()) / 1000));
+  }, [timeLeft]);
+
   const completeSession = useCallback(() => {
+    if (isCompletingRef.current) {
+      return;
+    }
+
+    isCompletingRef.current = true;
     stopTimer();
     const endTime = new Date().toISOString();
     
@@ -76,31 +137,86 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
       setSessionStartTime(null);
       setIsActive(false);
     }
-  }, [mode, taskName, sessionStartTime, config, stopTimer]);
+    isCompletingRef.current = false;
+  }, [config, mode, onSessionComplete, playSound, sessionStartTime, stopTimer, taskName]);
 
-  useEffect(() => {
-    if (isActive && timeLeft > 0) {
-      timerRef.current = window.setInterval(() => {
-        setTimeLeft(prev => prev - 1);
-      }, 1000);
-    } else if (timeLeft === 0 && isActive) {
+  const syncRemainingTime = useCallback(() => {
+    if (!isActive) {
+      return;
+    }
+
+    const nextTimeLeft = getRemainingSeconds();
+
+    setTimeLeft(prevTimeLeft => (
+      prevTimeLeft === nextTimeLeft ? prevTimeLeft : nextTimeLeft
+    ));
+
+    if (nextTimeLeft === 0) {
       completeSession();
     }
+  }, [completeSession, getRemainingSeconds, isActive]);
+
+  useEffect(() => {
+    successAudioRef.current = new Audio(SOUNDS.success);
+    successAudioRef.current.preload = 'auto';
+    successAudioRef.current.load();
+
+    failAudioRef.current = new Audio(SOUNDS.fail);
+    failAudioRef.current.preload = 'auto';
+    failAudioRef.current.load();
+
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      successAudioRef.current?.pause();
+      failAudioRef.current?.pause();
+      successAudioRef.current = null;
+      failAudioRef.current = null;
     };
-  }, [isActive, timeLeft, completeSession]);
+  }, []);
+
+  useEffect(() => {
+    if (!isActive) {
+      clearTimerInterval();
+      return;
+    }
+
+    syncRemainingTime();
+    timerRef.current = window.setInterval(syncRemainingTime, 250);
+
+    return () => {
+      clearTimerInterval();
+    };
+  }, [clearTimerInterval, isActive, syncRemainingTime]);
+
+  useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+
+    const handleResume = () => {
+      syncRemainingTime();
+    };
+
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleResume);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleResume);
+    };
+  }, [isActive, syncRemainingTime]);
 
   useEffect(() => {
     const modeLabel = mode === 'focus' ? 'Focus' : 'Rest';
     const trimmedTaskName = taskName.trim();
     const taskSegment = trimmedTaskName ? ` • ${trimmedTaskName}` : '';
     document.title = `${formatTime(timeLeft)} • ${modeLabel}${taskSegment}`;
+  }, [timeLeft, mode, taskName]);
 
+  useEffect(() => {
     return () => {
       document.title = baseTitleRef.current;
     };
-  }, [timeLeft, mode, taskName]);
+  }, []);
 
   const handleStart = () => {
     if (mode === 'focus') {
@@ -113,19 +229,32 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
         return;
       }
     }
+
     setError(null);
-    if (!sessionStartTime) setSessionStartTime(new Date().toISOString());
+
+    void unlockAudio();
+
+    if (!sessionStartTime) {
+      setSessionStartTime(new Date().toISOString());
+    }
+
+    targetEndTimeRef.current = Date.now() + (timeLeft * 1000);
     setIsActive(true);
   };
 
   const handlePause = () => {
+    const nextTimeLeft = getRemainingSeconds();
+
+    clearTimerInterval();
+    targetEndTimeRef.current = null;
+    setTimeLeft(nextTimeLeft);
     setIsActive(false);
-    if (timerRef.current) clearInterval(timerRef.current);
   };
 
   const resetTimer = () => {
     stopTimer();
-    setTimeLeft(mode === 'focus' ? config.focusTime * 60 : config.restTime * 60);
+    setTimeLeft(getDurationSeconds());
+    setSessionStartTime(null);
   };
 
   const switchConfig = (newConfig: SessionConfig) => {
