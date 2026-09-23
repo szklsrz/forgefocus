@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { TimerMode, SessionConfig, SessionRecord } from '../types';
+import { NotificationPreferences, TimerMode, SessionConfig, SessionRecord } from '../types';
 import { SESSION_OPTIONS, SOUNDS } from '../constants';
-import { saveSession, isTaskNameUniqueToday } from '../services/storage';
+import { getNotificationPreferences, saveNotificationPreferences, saveSession, isTaskNameUniqueToday } from '../services/storage';
+import { BrowserNotificationStatus, getBrowserNotificationStatus, requestBrowserNotificationPermission, sendTimerNotification } from '../services/notifications';
 
 interface TimerDisplayProps {
   onSessionComplete?: () => void;
@@ -16,6 +17,8 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
   const [taskName, setTaskName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sessionStartTime, setSessionStartTime] = useState<string | null>(null);
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(() => getNotificationPreferences());
+  const [notificationStatus, setNotificationStatus] = useState<BrowserNotificationStatus>(() => getBrowserNotificationStatus());
   
   const timerRef = useRef<number | null>(null);
   const targetEndTimeRef = useRef<number | null>(null);
@@ -116,6 +119,14 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
       };
       saveSession(record);
       playSound('success');
+      if (notificationStatus === 'granted' && notificationPreferences.notifyOnFocusEnd) {
+        sendTimerNotification({
+          mode: 'focus',
+          taskName: record.taskName,
+          focusMinutes: config.focusTime,
+          restMinutes: config.restTime,
+        });
+      }
       
       // Notify parent component to refresh points
       if (onSessionComplete) {
@@ -130,6 +141,14 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
       setTaskName('');
     } else {
       playSound('fail');
+      if (notificationStatus === 'granted' && notificationPreferences.notifyOnRestEnd) {
+        sendTimerNotification({
+          mode: 'rest',
+          taskName,
+          focusMinutes: config.focusTime,
+          restMinutes: config.restTime,
+        });
+      }
       // After rest, reset to focus
       setMode('focus');
       setTimeLeft(config.focusTime * 60);
@@ -138,7 +157,7 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
       setIsActive(false);
     }
     isCompletingRef.current = false;
-  }, [config, mode, onSessionComplete, playSound, sessionStartTime, stopTimer, taskName]);
+  }, [config, mode, notificationPreferences.notifyOnFocusEnd, notificationPreferences.notifyOnRestEnd, notificationStatus, onSessionComplete, playSound, sessionStartTime, stopTimer, taskName]);
 
   const syncRemainingTime = useCallback(() => {
     if (!isActive) {
@@ -218,7 +237,31 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
     };
   }, []);
 
-  const handleStart = () => {
+  useEffect(() => {
+    const syncNotificationStatus = () => {
+      setNotificationStatus(getBrowserNotificationStatus());
+    };
+
+    window.addEventListener('focus', syncNotificationStatus);
+
+    return () => {
+      window.removeEventListener('focus', syncNotificationStatus);
+    };
+  }, []);
+
+  const requestNotificationAccess = useCallback(async () => {
+    const nextStatus = await requestBrowserNotificationPermission();
+    setNotificationStatus(nextStatus);
+
+    const nextPreferences = saveNotificationPreferences({
+      hasRequestedPermission: true,
+    });
+    setNotificationPreferences(nextPreferences);
+
+    return nextStatus;
+  }, []);
+
+  const handleStart = async () => {
     if (mode === 'focus') {
       if (!taskName.trim()) {
         setError('Give your quest a name!');
@@ -232,6 +275,13 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
 
     setError(null);
 
+    if (
+      notificationStatus !== 'unsupported'
+      && !notificationPreferences.hasRequestedPermission
+    ) {
+      await requestNotificationAccess();
+    }
+
     void unlockAudio();
 
     if (!sessionStartTime) {
@@ -240,6 +290,17 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
 
     targetEndTimeRef.current = Date.now() + (timeLeft * 1000);
     setIsActive(true);
+  };
+
+  const handleEnableNotifications = async () => {
+    const nextStatus = await requestNotificationAccess();
+
+    if (nextStatus === 'denied') {
+      setError('Notifications are blocked in your browser settings.');
+      return;
+    }
+
+    setError(null);
   };
 
   const handlePause = () => {
@@ -266,6 +327,22 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
   };
 
   const progress = 1 - (timeLeft / (mode === 'focus' ? config.focusTime * 60 : config.restTime * 60));
+
+  const notificationMessage = (() => {
+    if (notificationStatus === 'unsupported') {
+      return 'Browser notifications are not supported here.';
+    }
+
+    if (notificationStatus === 'granted') {
+      return 'Browser notifications are enabled for focus and break completion.';
+    }
+
+    if (notificationStatus === 'denied') {
+      return 'Browser notifications are blocked. Enable them in browser settings to be alerted when time ends.';
+    }
+
+    return 'Notifications will be requested on your first start and can alert you when focus or break time ends.';
+  })();
 
   return (
     <div className="max-w-xl mx-auto py-12 px-4 flex flex-col items-center pb-24 md:pb-12 text-center">
@@ -369,6 +446,23 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ onSessionComplete }) => {
         >
           <i className="fa-solid fa-rotate-right text-xl"></i>
         </button>
+      </div>
+
+      <div className="mt-6 w-full rounded-2xl border-2 border-[#e5e5e5] bg-white px-5 py-4 text-left">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-black text-[#4b4b4b]">Browser alerts</p>
+            <p className="mt-1 text-sm font-bold text-[#777]">{notificationMessage}</p>
+          </div>
+          {notificationStatus !== 'unsupported' && notificationStatus !== 'granted' && (
+            <button
+              onClick={handleEnableNotifications}
+              className="duo-button shrink-0 rounded-2xl border-2 border-[#1cb0f6] px-4 py-2 font-black text-[#1cb0f6] hover:bg-[#ddf4ff]"
+            >
+              Enable
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Point Legend */}

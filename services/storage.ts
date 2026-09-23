@@ -1,11 +1,43 @@
 
-import { DailyStats, SessionRecord, StorageData } from '../types';
+import { DailyStats, NotificationPreferences, SessionRecord, StorageData } from '../types';
 
 const STORAGE_KEY = 'forgefocus_data';
+const NOTIFICATION_PREFERENCES_KEY = 'forgefocus_notification_preferences';
+
+const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  hasRequestedPermission: false,
+  notifyOnFocusEnd: true,
+  notifyOnRestEnd: true,
+};
 
 export const getStorageData = (): StorageData => {
   const data = localStorage.getItem(STORAGE_KEY);
   return data ? JSON.parse(data) : {};
+};
+
+export const getNotificationPreferences = (): NotificationPreferences => {
+  const data = localStorage.getItem(NOTIFICATION_PREFERENCES_KEY);
+
+  if (!data) {
+    return DEFAULT_NOTIFICATION_PREFERENCES;
+  }
+
+  return {
+    ...DEFAULT_NOTIFICATION_PREFERENCES,
+    ...JSON.parse(data),
+  };
+};
+
+export const saveNotificationPreferences = (
+  nextPreferences: Partial<NotificationPreferences>,
+): NotificationPreferences => {
+  const mergedPreferences = {
+    ...getNotificationPreferences(),
+    ...nextPreferences,
+  };
+
+  localStorage.setItem(NOTIFICATION_PREFERENCES_KEY, JSON.stringify(mergedPreferences));
+  return mergedPreferences;
 };
 
 export const saveSession = (session: SessionRecord) => {

@@ -27,4 +27,17 @@ export interface DailyStats {
 
 export type StorageData = Record<string, DailyStats>;
 
+export interface NotificationPreferences {
+  hasRequestedPermission: boolean;
+  notifyOnFocusEnd: boolean;
+  notifyOnRestEnd: boolean;
+}
+
+export interface TimerNotificationPayload {
+  mode: TimerMode;
+  taskName: string;
+  focusMinutes: number;
+  restMinutes: number;
+}
+
 export type View = 'timer' | 'history' | 'stats';
